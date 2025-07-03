@@ -56,7 +56,7 @@ MongoClient.connect(MONGO_URI, { useUnifiedTopology: true })
       await handleRemoveMeal(bot, mealsCollection, msg, match);
     });
 
-    bot.onText(/\/setActivity \(([^)]+)\)(?: (\d{4}-\d{2}-\d{2}))?/, async (msg, match) => {
+    bot.onText(/\/set_activity \(([^)]+)\)(?: (\d{4}-\d{2}-\d{2}))?/, async (msg, match) => {
       const userId = msg.from.id;
       const activity = match[1];
       const optionalDate = match[2];
@@ -90,7 +90,7 @@ MongoClient.connect(MONGO_URI, { useUnifiedTopology: true })
       }
     });
 
-    bot.onText(/\/setGoal (\d+) (\d+)/, async (msg, match) => {
+    bot.onText(/\/set_goal (\d+) (\d+)/, async (msg, match) => {
       const userId = msg.from.id;
       const calories = parseInt(match[1]);
       const protein = parseInt(match[2]);
@@ -400,8 +400,8 @@ const handleAllDaysAverage = async (bot, mealsCollection, msg) => {
       const date = day._id.date;
       const activity = activityMap[date];
 
-      const mealSummary = `🔥 ${day.totalCalories} kcal, 💪 ${day.totalProtein}g (from ${day.mealCount} meal${day.mealCount > 1 ? 's' : ''})`;
-      const activityLine = activity ? `\n🏃 ${escapeMarkdown(activity)}` : '';
+      const mealSummary = `🔥 ${day.totalCalories} kcal, 💪 ${day.totalProtein}g meal${day.mealCount > 1 ? 's' : ''})`;
+      const activityLine = activity ? `🏃 ${escapeMarkdown(activity)}` : '';
 
       return `📆 ${date}: ${mealSummary}${activityLine}`;
     });
