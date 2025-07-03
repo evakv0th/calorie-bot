@@ -7,6 +7,8 @@ const MONGO_URI = process.env.MONGO_URI;
 
 let db;
 let mealsCollection;
+let goalsCollection;
+let activitiesCollection;
 
 // Remove bot initialization here
 
@@ -15,6 +17,8 @@ MongoClient.connect(MONGO_URI, { useUnifiedTopology: true })
   .then((client) => {
     db = client.db('telegram_meal_bot');
     mealsCollection = db.collection('meals');
+    goalsCollection = db.collection('goals');
+    activitiesCollection = db.collection('activities');
     console.log('✅ Connected to MongoDB');
 
     const bot = new TelegramBot(API_KEY_BOT, {
@@ -44,12 +48,72 @@ MongoClient.connect(MONGO_URI, { useUnifiedTopology: true })
       await handleWeekMeals(bot, mealsCollection, msg);
     });
 
+    bot.onText(/\/summary/, async (msg) => {
+      await handleAllDaysAverage(bot, mealsCollection, msg);
+    });
+
     bot.onText(/\/remove (\d{4}-\d{2}-\d{2}) (\d+)/, async (msg, match) => {
       await handleRemoveMeal(bot, mealsCollection, msg, match);
+    });
+
+    bot.onText(/\/setActivity \(([^)]+)\)(?: (\d{4}-\d{2}-\d{2}))?/, async (msg, match) => {
+      const userId = msg.from.id;
+      const activity = match[1];
+      const optionalDate = match[2];
+
+      const datePattern = /^\d{4}-\d{2}-\d{2}$/;
+      const date = (optionalDate && datePattern.test(optionalDate))
+        ? optionalDate
+        : new Date().toISOString().split('T')[0];
+
+      const activityDoc = {
+        userId,
+        date,
+        activity,
+        timestamp: new Date(`${date}T00:00:00Z`),
+      };
+
+      try {
+        await activitiesCollection.updateOne(
+          { userId, date },
+          { $set: activityDoc },
+          { upsert: true }
+        );
+
+        bot.sendMessage(
+          msg.chat.id,
+          `✅ Activity set for ${date}: ${activity}`
+        );
+      } catch (err) {
+        console.error('Error setting activity:', err);
+        bot.sendMessage(msg.chat.id, '❌ Failed to set activity. Please try again.');
+      }
+    });
+
+    bot.onText(/\/setGoal (\d+) (\d+)/, async (msg, match) => {
+      const userId = msg.from.id;
+      const calories = parseInt(match[1]);
+      const protein = parseInt(match[2]);
+
+      try {
+        await goalsCollection.updateOne(
+          { userId },
+          { $set: { calories, protein } },
+          { upsert: true }
+        );
+
+        bot.sendMessage(msg.chat.id, `✅ Goal set: ${calories} kcal, ${protein}g protein`);
+      } catch (err) {
+        console.error('Error setting goal:', err);
+        bot.sendMessage(msg.chat.id, '❌ Failed to set goal. Please try again.');
+      }
     });
   })
   .catch((err) => console.error('❌ MongoDB connection error:', err));
 
+const getUserGoal = async (userId) => {
+  return await goalsCollection.findOne({ userId });
+};
 
 const handleRemoveLastMeal = async (bot, mealsCollection, msg) => {
   const userId = msg.from.id;
@@ -128,27 +192,45 @@ const handleTodayMeals = async (bot, mealsCollection, msg) => {
   const date = new Date().toISOString().split('T')[0]; // 'YYYY-MM-DD'
 
   try {
+    // Fetch meals for today
     const meals = await mealsCollection.find({ userId, date }).toArray();
 
+    // Fetch activity for today
+    const activityDoc = await activitiesCollection.findOne({ userId, date });
+
+    // Fetch goal (if any)
+    const goal = await getUserGoal(userId);
+
+    // Build meals text
+    let messageText = `📅 *Today's meals:*\n`;
+
     if (meals.length === 0) {
-      return bot.sendMessage(msg.chat.id, 'No meals logged for today.');
+      messageText += `No meals logged for today.\n`;
+    } else {
+      const total = meals.reduce((acc, m) => {
+        acc.calories += m.calories;
+        acc.protein += m.protein;
+        return acc;
+      }, { calories: 0, protein: 0 });
+
+      const mealList = meals
+        .map(m => `🍽 ${escapeMarkdown(m.meal)} — ${m.calories} kcal, ${m.protein}g protein`)
+        .join('\n');
+
+      messageText += `${mealList}\n\n🔥 *Total:* ${total.calories} kcal, ${total.protein}g protein`;
     }
 
-    const total = meals.reduce((acc, m) => {
-      acc.calories += m.calories;
-      acc.protein += m.protein;
-      return acc;
-    }, { calories: 0, protein: 0 });
+    // Add activity if present
+    if (activityDoc?.activity) {
+      messageText += `\n\n🏃 *Activity:* ${escapeMarkdown(activityDoc.activity)}`;
+    }
 
-    const mealList = meals
-      .map(m => `🍽 ${escapeMarkdown(m.meal)} — ${m.calories} kcal, ${m.protein}g protein`)
-      .join('\n');
+    // Add goal if present
+    if (goal) {
+      messageText += `\n\n🎯 *Goal:* ${goal.calories} kcal, ${goal.protein}g protein`;
+    }
 
-    bot.sendMessage(
-      msg.chat.id,
-      `📅 *Today's meals:*\n${mealList}\n\n🔥 *Total:* ${total.calories} kcal, ${total.protein}g protein`,
-      { parse_mode: 'MarkdownV2' }
-    );
+    bot.sendMessage(msg.chat.id, messageText, { parse_mode: 'MarkdownV2' });
 
   } catch (err) {
     console.error('Error fetching today\'s meals:', err);
@@ -159,27 +241,43 @@ const handleDayMeals = async (bot, mealsCollection, msg, match) => {
   const userId = msg.from.id;
   const date = match[1];
 
-  const meals = await mealsCollection.find({ userId, date }).toArray();
+  try {
+    const meals = await mealsCollection.find({ userId, date }).toArray();
+    const activityDoc = await activitiesCollection.findOne({ userId, date });
+    const goal = await getUserGoal(userId);
 
-  if (!meals.length) {
-    return bot.sendMessage(msg.chat.id, `No meals logged for ${date}.`);
+    let messageText = `📅 *Meals for ${escapeMarkdown(date)}:*\n`;
+
+    if (!meals.length) {
+      messageText += `No meals logged for this day.`;
+    } else {
+      const total = meals.reduce((acc, m) => {
+        acc.calories += m.calories;
+        acc.protein += m.protein;
+        return acc;
+      }, { calories: 0, protein: 0 });
+
+      const mealList = meals.map(m =>
+        `🍽 ${escapeMarkdown(m.meal)} — ${m.calories} kcal, ${m.protein}g`
+      ).join('\n');
+
+      messageText += `${mealList}\n\n🔥 *Total:* ${total.calories} kcal, ${total.protein}g`;
+    }
+
+    if (activityDoc?.activity) {
+      messageText += `\n\n🏃 *Activity:* ${escapeMarkdown(activityDoc.activity)}`;
+    }
+
+    if (goal) {
+      messageText += `\n\n🎯 *Goal:* ${goal.calories} kcal, ${goal.protein}g protein`;
+    }
+
+    bot.sendMessage(msg.chat.id, messageText, { parse_mode: 'MarkdownV2' });
+
+  } catch (err) {
+    console.error(`Error fetching meals for ${date}:`, err);
+    bot.sendMessage(msg.chat.id, `❌ Error fetching data for ${date}. Try again later.`);
   }
-
-  const total = meals.reduce((acc, m) => {
-    acc.calories += m.calories;
-    acc.protein += m.protein;
-    return acc;
-  }, { calories: 0, protein: 0 });
-
-  const mealList = meals.map(m =>
-    `🍽 ${escapeMarkdown(m.meal)} — ${m.calories} kcal, ${m.protein}g`
-  ).join('\n');
-
-  bot.sendMessage(
-    msg.chat.id,
-    `📅 *Meals for ${escapeMarkdown(date)}:*\n${mealList}\n\n🔥 *Total:* ${total.calories} kcal, ${total.protein}g`,
-    { parse_mode: 'MarkdownV2' }
-  );
 };
 const handleWeekMeals = async (bot, mealsCollection, msg) => {
   const userId = msg.from.id;
@@ -190,17 +288,25 @@ const handleWeekMeals = async (bot, mealsCollection, msg) => {
   startDate.setHours(0, 0, 0, 0);
 
   try {
-    // Get all meals in the last 7 days
+    // Fetch meals
     const meals = await mealsCollection.find({
       userId,
       timestamp: { $gte: startDate }
     }).toArray();
 
-    if (!meals.length) {
-      return bot.sendMessage(msg.chat.id, 'No meals found in the last 7 days.');
+    // Fetch activities
+    const activitiesCursor = await activitiesCollection.find({
+      userId,
+      timestamp: { $gte: startDate }
+    }).toArray();
+
+    if (!meals.length && !activitiesCursor.length) {
+      return bot.sendMessage(msg.chat.id, 'No meals or activities found in the last 7 days.');
     }
 
-    // Group by date
+    const goal = await getUserGoal(userId);
+
+    // Group meals by date
     const dailyStats = {};
     for (const meal of meals) {
       const date = meal.timestamp.toISOString().split('T')[0];
@@ -212,32 +318,103 @@ const handleWeekMeals = async (bot, mealsCollection, msg) => {
       dailyStats[date].count += 1;
     }
 
-    const dates = Object.keys(dailyStats).sort(); // Ascending date order
+    // Map activities by date
+    const activitiesMap = {};
+    for (const activity of activitiesCursor) {
+      const date = activity.timestamp.toISOString().split('T')[0];
+      activitiesMap[date] = activity.activity;
+    }
 
-    // Calculate totals
-    const totalDays = dates.length;
-    const totalCalories = dates.reduce((sum, date) => sum + dailyStats[date].calories, 0);
-    const totalProtein = dates.reduce((sum, date) => sum + dailyStats[date].protein, 0);
+    // Collect all unique dates (from meals and activities)
+    const allDates = new Set([
+      ...Object.keys(dailyStats),
+      ...Object.keys(activitiesMap)
+    ]);
 
-    const avgCalories = Math.round(totalCalories / totalDays);
-    const avgProtein = Math.round(totalProtein / totalDays);
+    const sortedDates = Array.from(allDates).sort(); // Ascending order
 
-    // Format response
-    const dayLines = dates.map(date => {
+    // Calculate totals from days that had meals
+    const totalCalories = Object.values(dailyStats).reduce((sum, stat) => sum + stat.calories, 0);
+    const totalProtein = Object.values(dailyStats).reduce((sum, stat) => sum + stat.protein, 0);
+    const totalDays = Object.keys(dailyStats).length;
+
+    const avgCalories = totalDays ? Math.round(totalCalories / totalDays) : 0;
+    const avgProtein = totalDays ? Math.round(totalProtein / totalDays) : 0;
+
+    // Format lines
+    const dayLines = sortedDates.map(date => {
       const stats = dailyStats[date];
-      return `📆 ${date}: ${stats.calories} kcal, ${stats.protein}g protein (${stats.count} meal${stats.count > 1 ? 's' : ''})`;
+      const activity = activitiesMap[date];
+      const mealLine = stats
+        ? `${stats.calories} kcal, ${stats.protein}g protein (${stats.count} meal${stats.count > 1 ? 's' : ''})`
+        : `No meals`;
+
+      const activityLine = activity ? `🏃 ${escapeMarkdown(activity)}` : '';
+      return `📆 ${date}: ${mealLine}${activityLine ? `\n   ${activityLine}` : ''}`;
     }).join('\n');
 
-    const summary = `📊 *Last 7 Days Summary:*\n\n${dayLines}\n\n🔥 *Average/day:* ${avgCalories} kcal\n💪 *Average/day:* ${avgProtein}g protein`;
+    const summary = `📊 *Last 7 Days Summary:*\n\n${dayLines}\n\n🔥 *Average/day:* ${avgCalories} kcal\n💪 *Average/day:* ${avgProtein}g protein${goal ? `\n\n🎯 *Goal:* ${goal.calories} kcal, ${goal.protein}g protein` : ''}`;
 
     bot.sendMessage(msg.chat.id, summary, { parse_mode: 'Markdown' });
 
   } catch (err) {
-    console.error('Error fetching weekly meals:', err);
-    bot.sendMessage(msg.chat.id, '❌ Error fetching last 7 days of meals. Try again later.');
+    console.error('Error fetching weekly meals or activities:', err);
+    bot.sendMessage(msg.chat.id, '❌ Error fetching last 7 days of data. Try again later.');
   }
 };
 
+const handleAllDaysAverage = async (bot, mealsCollection, msg) => {
+  const userId = msg.from.id;
+
+  try {
+    // Get daily meal totals
+    const result = await mealsCollection.aggregate([
+      { $match: { userId } },
+      {
+        $group: {
+          _id: {
+            date: { $dateToString: { format: '%Y-%m-%d', date: '$timestamp' } }
+          },
+          totalCalories: { $sum: '$calories' },
+          totalProtein: { $sum: '$protein' },
+          mealCount: { $sum: 1 }
+        }
+      },
+      { $sort: { '_id.date': 1 } }
+    ]).toArray();
+
+    if (!result.length) {
+      return bot.sendMessage(msg.chat.id, 'No meal data found.');
+    }
+
+    // Get all activities by date
+    const activityDocs = await activitiesCollection.find({ userId }).toArray();
+    const activityMap = {};
+    for (const activity of activityDocs) {
+      const date = activity.timestamp.toISOString().split('T')[0];
+      activityMap[date] = activity.activity;
+    }
+
+    // Build lines with activity
+    const lines = result.map(day => {
+      const date = day._id.date;
+      const activity = activityMap[date];
+
+      const mealSummary = `🔥 ${day.totalCalories} kcal, 💪 ${day.totalProtein}g (from ${day.mealCount} meal${day.mealCount > 1 ? 's' : ''})`;
+      const activityLine = activity ? `\n🏃 ${escapeMarkdown(activity)}` : '';
+
+      return `📆 ${date}: ${mealSummary}${activityLine}`;
+    });
+
+    const message = `📈 *Daily Averages (All Time):*\n\n${lines.join('\n')}`;
+
+    bot.sendMessage(msg.chat.id, message, { parse_mode: 'Markdown' });
+
+  } catch (err) {
+    console.error('Error fetching daily averages:', err);
+    bot.sendMessage(msg.chat.id, '❌ Failed to fetch daily averages. Try again later.');
+  }
+};
 const handleRemoveMeal = async (bot, mealsCollection, msg, match) => {
   const userId = msg.from.id;
   const [ , date, indexStr ] = match;
