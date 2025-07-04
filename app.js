@@ -352,7 +352,7 @@ const handleWeekMeals = async (bot, mealsCollection, msg) => {
       const stats = dailyStats[date];
       const activity = activitiesMap[date];
       const mealLine = stats
-        ? `${stats.calories} kcal, ${stats.protein}g protein (${stats.count} meal${stats.count > 1 ? 's' : ''})`
+        ? `${stats.calories} kcal, ${stats.protein}g protein`
         : `No meals`;
 
       const activityLine = activity ? `🏃 ${escapeMarkdown(activity)}` : '';
@@ -406,7 +406,7 @@ const handleAllDaysAverage = async (bot, mealsCollection, msg) => {
       const date = day._id.date;
       const activity = activityMap[date];
 
-      const mealSummary = `🔥 ${day.totalCalories} kcal, 💪 ${day.totalProtein}g meal${day.mealCount > 1 ? 's' : ''})`;
+      const mealSummary = `🔥 ${day.totalCalories} kcal, 💪 ${day.totalProtein}g`;
       const activityLine = activity ? `🏃 ${escapeMarkdown(activity)}` : '';
 
       return `📆 ${date}: ${mealSummary}${activityLine}`;
