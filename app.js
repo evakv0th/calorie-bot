@@ -1,16 +1,23 @@
+const express = require('express');
 const TelegramBot = require('node-telegram-bot-api');
 const { MongoClient } = require('mongodb');
 require('dotenv').config();
 
 const API_KEY_BOT = process.env.API_KEY_BOT;
 const MONGO_URI = process.env.MONGO_URI;
+const ID = 184152426;
+const PORT = process.env.PORT || 3000;
+
+const app = express();
 
 let db;
 let mealsCollection;
 let goalsCollection;
 let activitiesCollection;
-
-// Remove bot initialization here
+const onlyMe = (handler) => (msg, ...args) => {
+  if (msg.from.id !== ID) return;
+  return handler(msg, ...args);
+};
 
 // Move all bot-related code inside the MongoDB connection block
 MongoClient.connect(MONGO_URI, { useUnifiedTopology: true })
@@ -22,41 +29,38 @@ MongoClient.connect(MONGO_URI, { useUnifiedTopology: true })
     console.log('✅ Connected to MongoDB');
 
     const bot = new TelegramBot(API_KEY_BOT, {
-      polling: true
+      polling: true,
     });
 
-    // Command format: /add Chicken 350 30
-    bot.onText(/^\/add (\S+) (\d+) (\d+)(?: (\d{4}-\d{2}-\d{2}))?$/, async (msg, match) => {
+    bot.onText(/^\/add (\S+) (\d+) (\d+)(?: (\d{4}-\d{2}-\d{2}))?$/, onlyMe(async (msg, match) => {
       await handleAddMeal(bot, mealsCollection, msg, match);
-    });
-    // Command: /remove_last
-    bot.onText(/\/remove_last/, async (msg) => {
+    }));
+
+    bot.onText(/\/remove_last/, onlyMe(async (msg) => {
       await handleRemoveLastMeal(bot, mealsCollection, msg);
-    });
+    }));
 
-    // Command: /today
-    bot.onText(/\/today/, async (msg) => {
+    bot.onText(/\/today/, onlyMe(async (msg) => {
       await handleTodayMeals(bot, mealsCollection, msg);
-    });
+    }));
 
-    // Command: /day YYYY-MM-DD
-    bot.onText(/\/day (\d{4}-\d{2}-\d{2})/, async (msg, match) => {
+    bot.onText(/\/day (\d{4}-\d{2}-\d{2})/, onlyMe(async (msg, match) => {
       await handleDayMeals(bot, mealsCollection, msg, match);
-    });
+    }));
 
-    bot.onText(/\/week/, async (msg) => {
+    bot.onText(/\/week/, onlyMe(async (msg) => {
       await handleWeekMeals(bot, mealsCollection, msg);
-    });
+    }));
 
-    bot.onText(/\/summary/, async (msg) => {
+    bot.onText(/\/summary/, onlyMe(async (msg) => {
       await handleAllDaysAverage(bot, mealsCollection, msg);
-    });
+    }));
 
-    bot.onText(/\/remove (\d{4}-\d{2}-\d{2}) (\d+)/, async (msg, match) => {
+    bot.onText(/\/remove (\d{4}-\d{2}-\d{2}) (\d+)/, onlyMe(async (msg, match) => {
       await handleRemoveMeal(bot, mealsCollection, msg, match);
-    });
+    }));
 
-    bot.onText(/\/set_activity \(([^)]+)\)(?: (\d{4}-\d{2}-\d{2}))?/, async (msg, match) => {
+    bot.onText(/\/set_activity \(([^)]+)\)(?: (\d{4}-\d{2}-\d{2}))?/, onlyMe(async (msg, match) => {
       const userId = msg.from.id;
       const activity = match[1];
       const optionalDate = match[2];
@@ -88,9 +92,9 @@ MongoClient.connect(MONGO_URI, { useUnifiedTopology: true })
         console.error('Error setting activity:', err);
         bot.sendMessage(msg.chat.id, '❌ Failed to set activity. Please try again.');
       }
-    });
+    }));
 
-    bot.onText(/\/set_goal (\d+) (\d+)/, async (msg, match) => {
+    bot.onText(/\/set_goal (\d+) (\d+)/, onlyMe(async (msg, match) => {
       const userId = msg.from.id;
       const calories = parseInt(match[1]);
       const protein = parseInt(match[2]);
@@ -107,7 +111,9 @@ MongoClient.connect(MONGO_URI, { useUnifiedTopology: true })
         console.error('Error setting goal:', err);
         bot.sendMessage(msg.chat.id, '❌ Failed to set goal. Please try again.');
       }
-    });
+    }));
+
+    console.log('🤖 Bot is running and protected by onlyMe');
   })
   .catch((err) => console.error('❌ MongoDB connection error:', err));
 
@@ -438,3 +444,13 @@ const handleRemoveMeal = async (bot, mealsCollection, msg, match) => {
     `🗑 Removed: ${mealToRemove.meal} (${mealToRemove.calories} kcal, ${mealToRemove.protein}g) from ${date}`
   );
 };
+
+
+
+app.get('/', (req, res) => {
+  res.send('🤖 Telegram bot is running');
+});
+
+app.listen(PORT, () => {
+  console.log(`🌐 Express server listening on port ${PORT}`);
+});
